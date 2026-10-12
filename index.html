@@ -1,0 +1,105 @@
+<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Airship Tycoon">
+<meta name="theme-color" content="#1b2a3a"><link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231b2a3a'/%3E%3Cellipse cx='50' cy='42' rx='38' ry='14' fill='%23d4a94f'/%3E%3Crect x='40' y='58' width='20' height='8' fill='%23d4a94f'/%3E%3C/svg%3E"><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231b2a3a'/%3E%3Cellipse cx='50' cy='42' rx='38' ry='14' fill='%23d4a94f'/%3E%3Crect x='40' y='58' width='20' height='8' fill='%23d4a94f'/%3E%3C/svg%3E">
+<link rel="manifest" id="mf"><title>Airship Tycoon</title>
+<style>
+body{margin:0;max-width:480px;margin:0 auto;background:#1b2a3a;color:#f3e6c4;font-family:Georgia,serif;padding:env(safe-area-inset-top) 10px 80px}
+h1{font-size:22px;text-align:center;letter-spacing:3px;color:#d4a94f;border-bottom:2px solid #d4a94f;margin:8px 0;padding-bottom:6px}
+.bar{display:flex;justify-content:space-around;font-size:14px;margin-bottom:8px}
+.card{background:#24384d;border:1px solid #d4a94f55;border-radius:8px;padding:10px;margin:8px 0}
+button{background:#d4a94f;color:#1b2a3a;border:0;border-radius:6px;padding:10px 12px;font:bold 14px Georgia;margin:3px}
+button:disabled{opacity:.4} select,input{font-size:16px;padding:6px;border-radius:6px}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#111c27;padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;color:#d4a94f;margin:0;padding:14px 0} nav button.on{background:#24384d}
+svg{width:100%;background:#2e4a3c;border-radius:8px} .small{font-size:12px;opacity:.8}
+#modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:20px}
+#modal .card{max-width:400px}
+#rot{display:none;position:fixed;inset:0;background:#1b2a3a;z-index:99;align-items:center;justify-content:center;font-size:22px;color:#d4a94f;text-align:center}@media (orientation:landscape) and (max-height:500px){#rot{display:flex}}</style></head><body>
+<div id=rot>⟲<br>Bitte Gerät drehen<br><span style='font-size:14px'>Airship Tycoon wird hochkant gespielt</span></div><h1>✦ AIRSHIP TYCOON ✦</h1><div class="bar" id="bar"></div><div id="main"></div>
+<nav><button data-t="karte">Karte</button><button data-t="flotte">Flotte</button><button data-t="routen">Routen</button><button data-t="hangar">Hangar</button></nav>
+<div id="modal"><div class="card" id="mbody"></div></div>
+<script>// ---- core logic (shared by browser & node tests) ----
+const CITIES={BER:{n:"Berlin",x:62,y:30},PAR:{n:"Paris",x:30,y:44},LON:{n:"London",x:22,y:30},FRI:{n:"Friedrichshafen",x:46,y:52},ZRH:{n:"Zürich",x:42,y:56},WIE:{n:"Wien",x:72,y:52},ROM:{n:"Rom",x:58,y:82},MAD:{n:"Madrid",x:10,y:80},AMS:{n:"Amsterdam",x:36,y:26},KOP:{n:"Kopenhagen",x:56,y:12}};
+const SHIPS={LZ:{n:"LZ Kolibri",cap:20,cargo:2,speed:60,cost:40000,upkeep:40,fuel:1.0},GR:{n:"Graf Albatros",cap:45,cargo:6,speed:80,cost:110000,upkeep:90,fuel:1.8},HI:{n:"Hindenburg-Klasse",cap:90,cargo:12,speed:110,cost:300000,upkeep:220,fuel:3.2}};
+const KM_PER_UNIT=18, GAME_HOUR_MS=60000; // 1 real minute = 1 game hour
+function dist(a,b){const A=CITIES[a],B=CITIES[b];return Math.round(Math.hypot(A.x-B.x,A.y-B.y)*KM_PER_UNIT);}
+function newState(now){return{money:150000,rep:50,hangarLvl:1,ships:[],routes:[],events:[],log:[],last:now,t:0,fuelPrice:1,nextId:1};}
+function slots(s){return 1+s.hangarLvl*2;}
+function hangarCost(s){return 50000*Math.pow(2,s.hangarLvl-1);}
+function routeKey(a,b){return [a,b].sort().join("-");}
+function baseFare(km){return Math.round(20+km*0.12);}
+function routeCost(km){return 5000+km*20;}
+function buyShip(s,type){const T=SHIPS[type];if(s.ships.length>=slots(s))return"Keine freien Hangarplätze";if(s.money<T.cost)return"Zu wenig Geld";s.money-=T.cost;s.ships.push({id:s.nextId++,type,route:null,wear:0,prog:0,dir:0});return null;}
+function openRoute(s,a,b){if(a===b)return"Gleiche Stadt";const k=routeKey(a,b);if(s.routes.find(r=>r.k===k))return"Route existiert";const km=dist(a,b),c=routeCost(km);if(s.money<c)return"Zu wenig Geld";s.money-=c;s.routes.push({k,a,b,km,fare:baseFare(km),cargoPrice:Math.round(baseFare(km)*3),earned:0});return null;}
+function demandFactor(price,base){return Math.max(0,Math.min(1.3,1.6-0.6*price/base));}
+function eventMult(s,r){let m=1;for(const e of s.events){if(e.type==="fair"&&(e.city===r.a||e.city===r.b))m*=1.6;}return m;}
+function stormAt(s,r){return s.events.some(e=>e.type==="storm"&&(e.city===r.a||e.city===r.b));}
+// advance one game hour
+function tickHour(s,rng,sum){s.t++;const repF=0.6+s.rep/125;
+ for(const sh of s.ships){const T=SHIPS[sh.type];s.money-=T.upkeep/24*(1+sh.wear/100);sum.upkeep+=T.upkeep/24;
+  const r=s.routes.find(x=>x.k===sh.route);if(!r)continue;
+  if(stormAt(s,r)){sum.stormHours++;continue;}
+  const trip=r.km/T.speed; sh.prog+=1/trip; s.money-=T.fuel*r.km/trip*0.5*s.fuelPrice;sum.fuel+=T.fuel*r.km/trip*0.5*s.fuelPrice;
+  sh.wear=Math.min(100,sh.wear+0.15);
+  if(sh.prog>=1){sh.prog=0;sh.dir^=1;
+   if(rng()<sh.wear/2000){sum.incidents++;s.rep=Math.max(0,s.rep-5);sh.wear=Math.min(100,sh.wear+10);continue;}
+   const em=eventMult(s,r),b=baseFare(r.km);
+   const pax=Math.floor(T.cap*Math.min(1,demandFactor(r.fare,b)*repF*em*(0.85+rng()*0.3)));
+   const crg=Math.floor(T.cargo*Math.min(1,demandFactor(r.cargoPrice,b*3)*em*(0.85+rng()*0.3)));
+   const inc=pax*r.fare+crg*r.cargoPrice;s.money+=inc;r.earned+=inc;sum.income+=inc;sum.trips++;sum.pax+=pax;
+   const fair=r.fare<=b*1.1; s.rep=Math.max(0,Math.min(100,s.rep+(fair?0.2:-0.1)-(sh.wear>70?0.3:0)));}
+ }
+ s.events=s.events.filter(e=>--e.left>0);
+ if(rng()<0.03){const cs=Object.keys(CITIES),c=cs[Math.floor(rng()*cs.length)];const type=rng()<0.5?"storm":"fair";s.events.push({type,city:c,left:type==="storm"?6:24});sum.ev.push((type==="storm"?"Sturm über ":"Messe in ")+CITIES[c].n);}
+ if(s.t%24===0)s.fuelPrice=Math.max(0.6,Math.min(1.6,s.fuelPrice+(rng()-0.5)*0.2));
+}
+function emptySum(){return{hours:0,income:0,fuel:0,upkeep:0,trips:0,pax:0,incidents:0,stormHours:0,ev:[]};}
+function advance(s,now,rng=Math.random){const sum=emptySum();let h=Math.floor((now-s.last)/GAME_HOUR_MS);h=Math.min(h,24*14);s.last+=Math.floor((now-s.last)/GAME_HOUR_MS)*GAME_HOUR_MS;for(let i=0;i<h;i++)tickHour(s,rng,sum);sum.hours=h;return sum;}
+function repair(s,sh){const c=Math.round(sh.wear*SHIPS[sh.type].cost/400);if(s.money<c)return"Zu wenig Geld";s.money-=c;sh.wear=0;return null;}
+function sellShip(s,sh){s.money+=Math.round(SHIPS[sh.type].cost*0.5*(1-sh.wear/200));s.ships=s.ships.filter(x=>x!==sh);}
+if(typeof module!=="undefined")module.exports={CITIES,SHIPS,newState,buyShip,openRoute,advance,repair,sellShip,slots,hangarCost,dist,GAME_HOUR_MS};
+</script>
+<script>
+const mf={name:"Airship Tycoon",short_name:"Airships",display:"standalone",orientation:"portrait",start_url:location.href.split('#')[0],background_color:"#1b2a3a",theme_color:"#1b2a3a",icons:[{src:"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231b2a3a'/%3E%3Cellipse cx='50' cy='42' rx='38' ry='14' fill='%23d4a94f'/%3E%3Crect x='40' y='58' width='20' height='8' fill='%23d4a94f'/%3E%3C/svg%3E",sizes:"512x512",type:"image/svg+xml"}]};
+document.getElementById('mf').href=URL.createObjectURL(new Blob([JSON.stringify(mf)],{type:'application/json'}));
+const KEY='airshipTycoon1';let S;try{S=JSON.parse(localStorage.getItem(KEY))}catch(e){}
+let first=!S;if(!S)S=newState(Date.now());
+const fm=n=>'ℳ '+Math.round(n).toLocaleString('de-CH');let tab='karte';
+function save(){localStorage.setItem(KEY,JSON.stringify(S))}
+function msg(h){mbody.innerHTML=h+'<br><button onclick="modal.style.display=\'none\'">OK</button>';modal.style.display='flex'}
+function summary(sum,title){if(sum.hours<1)return;msg(`<h3>${title}</h3>${sum.hours} Spielstunden vergangen<br>Flüge: ${sum.trips}, Passagiere: ${sum.pax}<br>Einnahmen: ${fm(sum.income)}<br>Treibstoff: −${fm(sum.fuel)}<br>Unterhalt: −${fm(sum.upkeep)}<br>Zwischenfälle: ${sum.incidents}<br>${sum.ev.length?'Ereignisse: '+sum.ev.slice(0,6).join(', '):''}`)}
+function step(){const sum=advance(S,Date.now());if(sum.ev.length)toast(sum.ev.join(', '));if(sum.hours)save();light();return sum}
+function toast(t){const d=document.createElement('div');d.className='card';d.style.cssText='position:fixed;top:60px;left:10px;right:10px';d.textContent=t;document.body.appendChild(d);setTimeout(()=>d.remove(),3500)}
+function act(e){if(e)toast(e);save();render()}
+const P=k=>({x:CITIES[k].x,y:CITIES[k].y*1.35+5});function render(){
+ bar.innerHTML=`<span>${fm(S.money)}</span><span>Ruf ${S.rep.toFixed(0)}/100</span><span>⛽ ${(S.fuelPrice*100).toFixed(0)}%</span><span>Tag ${Math.floor(S.t/24)+1} ${S.t%24}h</span>`;
+ document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===tab));
+ let h='';
+ if(tab==='karte'){
+  h='<svg viewBox="0 0 100 130">';for(const r of S.routes){const A=P(r.a),B=P(r.b);h+=`<line x1=${A.x} y1=${A.y} x2=${B.x} y2=${B.y} stroke="#d4a94f" stroke-width=.6 stroke-dasharray=2,1 />`}
+  for(const sh of S.ships){const r=S.routes.find(x=>x.k===sh.route);if(!r)continue;let A=P(r.a),B=P(r.b);if(sh.dir)[A,B]=[B,A];h+=`<text x=${A.x+(B.x-A.x)*sh.prog} y=${A.y+(B.y-A.y)*sh.prog} font-size=4 text-anchor=middle>🎈</text>`}
+  for(const[k,c0]of Object.entries(CITIES)){const c={...c0,...P(k)};const ev=S.events.find(e=>e.city===k);h+=`<circle cx=${c.x} cy=${c.y} r=1.5 fill="${ev?(ev.type==='storm'?'#8af':'#fd5'):'#f3e6c4'}"/><text x=${c.x} y=${c.y-2.5} font-size=3.2 fill="#f3e6c4" text-anchor=middle>${c.n}${ev?(ev.type==='storm'?' ⛈':' 🎪'):''}</text>`}
+  h+='</svg><div class="card small">1 Echtminute = 1 Spielstunde. Das Spiel läuft weiter, auch wenn du die App schliesst (max. 14 Spieltage Offline-Simulation).<br>Aktive Ereignisse: '+(S.events.map(e=>(e.type==='storm'?'Sturm ':'Messe ')+CITIES[e.city].n+' ('+e.left+'h)').join(', ')||'keine')+'</div>';
+ }
+ if(tab==='flotte'){
+  h=`<div class="card">Hangarplätze: ${S.ships.length}/${slots(S)}</div>`;
+  for(const[k,T]of Object.entries(SHIPS))h+=`<div class="card"><b>${T.n}</b> – ${fm(T.cost)}<div class="small">${T.cap} Passagiere · ${T.cargo} t Fracht · ${T.speed} km/h · Unterhalt ${fm(T.upkeep)}/Tag · Gas ×${T.fuel}</div><button onclick="act(buyShip(S,'${k}'))">Kaufen</button></div>`;
+  for(const sh of S.ships){const T=SHIPS[sh.type];h+=`<div class="card"><b>#${sh.id} ${T.n}</b> · Verschleiss ${sh.wear.toFixed(0)}%<br><select onchange="S.ships.find(x=>x.id==${sh.id}).route=this.value||null;act()"><option value="">– im Hangar –</option>${S.routes.map(r=>`<option value="${r.k}" ${r.k===sh.route?'selected':''}>${CITIES[r.a].n} ⇄ ${CITIES[r.b].n}</option>`).join('')}</select><br><button onclick="act(repair(S,S.ships.find(x=>x.id==${sh.id})))">Warten (${fm(sh.wear*T.cost/400)})</button><button onclick="if(confirm('Verkaufen?')){sellShip(S,S.ships.find(x=>x.id==${sh.id}));act()}">Verkaufen</button></div>`}
+ }
+ if(tab==='routen'){
+  const opts=Object.entries(CITIES).map(([k,c])=>`<option value=${k}>${c.n}</option>`).join('');
+  h=`<div class="card"><b>Neue Route</b><br><select id=ra>${opts}</select> ⇄ <select id=rb>${opts}</select><br><button onclick="act(openRoute(S,ra.value,rb.value))">Eröffnen</button><div class="small">Kosten: 5000 + 20 pro km</div></div>`;
+  for(const r of S.routes){const n=S.ships.filter(x=>x.route===r.k).length;h+=`<div class="card"><b>${CITIES[r.a].n} ⇄ ${CITIES[r.b].n}</b> · ${r.km} km · ${n} Schiffe<br>Ticket: <input type=number value=${r.fare} style="width:80px" onchange="S.routes.find(x=>x.k=='${r.k}').fare=+this.value;act()"> Fracht/t: <input type=number value=${r.cargoPrice} style="width:80px" onchange="S.routes.find(x=>x.k=='${r.k}').cargoPrice=+this.value;act()"><div class="small">Richtpreis Ticket ${fm(20+r.km*.12)} – höhere Preise senken Nachfrage & Ruf. Umsatz total ${fm(r.earned)}</div></div>`}
+ }
+ if(tab==='hangar'){
+  h=`<div class="card"><b>Hangar Stufe ${S.hangarLvl}</b><br>${slots(S)} Plätze<br><button onclick="if(S.money>=hangarCost(S)){S.money-=hangarCost(S);S.hangarLvl++;act()}else act('Zu wenig Geld')">Ausbauen (${fm(hangarCost(S))})</button></div><div class="card small">Tipps: Wartung hält den Ruf hoch und verhindert Zwischenfälle. Bei Sturm bleiben Schiffe am Boden. Messen steigern die Nachfrage.</div><button onclick="if(confirm('Spielstand wirklich löschen?')){localStorage.removeItem(KEY);location.reload()}">Neues Spiel</button>`;
+ }
+ if(render.barOnly){render.barOnly=0;return}main.innerHTML=h;
+}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;render()});
+const s0=step();if(first)msg('<h3>Willkommen, Kapitän!</h3>Es ist 1910. Eröffne eine Route, kaufe ein Luftschiff und weise es zu. Deine Gesellschaft arbeitet weiter, auch wenn du weg bist.');else summary(s0,'Während du weg warst');
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){const s=step();summary(s,'Während du weg warst')}else save()});
+setInterval(()=>{step()},2000);function light(){if(tab==='karte'||!main.innerHTML)render();else{const m=main.innerHTML;render.barOnly=1;render();}}
+</script></body></html>
